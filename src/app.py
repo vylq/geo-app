@@ -4,7 +4,7 @@ import requests
 import streamlit as st
 from streamlit import components
 
-from map_engine import load_fixed_graph, build_routes, build_map
+from map_engine import build_routes, build_map
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -51,9 +51,6 @@ def _search_callback(which: str) -> None:
         st.session_state[f"{which}_point"] = None
         st.session_state[f"{which}_error"] = str(e)
 
-
-def cached_graph(network_type: str):
-    return load_fixed_graph(network_type)
 
 
 st.set_page_config(page_title="Route Planner", layout="wide")
@@ -158,8 +155,7 @@ names = ["Start", "End"]
 
 try:
     with st.spinner("Загрузка графа и построение маршрута..."):
-        G = cached_graph(network_type)
-        routes, errors = build_routes(G, latlons, weight=weight)
+        routes, errors = build_routes(network_type, latlons, weight=weight)
 
     if errors:
         st.warning("Не получилось построить маршрут:\n" + "\n".join(errors))
