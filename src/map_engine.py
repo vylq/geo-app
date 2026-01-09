@@ -1,18 +1,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from pathlib import Path
+from typing import Any, Iterable
 
 import folium
 import numpy as np
 import osmnx as ox
 
+BASE_DIR = Path(__file__).resolve().parents[1]
+CACHE_DIR = BASE_DIR / "cache"
+GRAPH_CACHE_DIR = CACHE_DIR / "graphs"
+OSMNX_CACHE_DIR = CACHE_DIR / "osmnx"
+FIXED_CENTER_LATLON = (59.849224, 30.144109)
+FIXED_DIST_M = 20_000
+
 
 def configure_osmnx() -> None:
+    OSMNX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    ox.settings.cache_folder = str(OSMNX_CACHE_DIR)
     ox.settings.use_cache = True
     ox.settings.log_console = False
 
-    ox.settings.requests_timeout = 60 
+    ox.settings.requests_timeout = 60
     ox.settings.overpass_settings = "[out:json][timeout:60]"
 
 
@@ -45,24 +55,42 @@ def ensure_travel_time(G):
     return G
 
 
-def load_graph_from_point(
-    center_latlon: tuple[float, float],
-    network_type: str,
-    dist_m: int,
-    use_travel_time: bool,
-):
+def _has_travel_time(G) -> bool:
+    try:
+        any_edge = next(iter(G.edges(data=True)))[2]
+    except StopIteration:
+        return False
+    return "travel_time" in any_edge
+
+
+def load_fixed_graph(network_type: str):
     configure_osmnx()
+    GRAPH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_name = f"{network_type}_{FIXED_DIST_M}m.graphml"
+    cache_path = GRAPH_CACHE_DIR / cache_name
+
+    if cache_path.exists():
+        G = ox.load_graphml(cache_path)
+        if G.number_of_edges() == 0:
+            cache_path.unlink(missing_ok=True)
+        else:
+            if not _has_travel_time(G):
+                G = ensure_travel_time(G)
+                ox.save_graphml(G, cache_path)
+            return G
 
     G = ox.graph_from_point(
-        center_latlon,
-        dist=dist_m,
+        FIXED_CENTER_LATLON,
+        dist=FIXED_DIST_M,
         network_type=network_type,
         simplify=True,
     )
 
-    if use_travel_time:
-        G = ensure_travel_time(G)
+    G = ensure_travel_time(G)
+    if G.number_of_edges() == 0:
+        raise ValueError("OSM returned a graph with no edges for the fixed area.")
 
+    ox.save_graphml(G, cache_path)
     return G
 
 

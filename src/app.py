@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import math
 import requests
 import streamlit as st
 from streamlit import components
 
-from map_engine import load_graph_from_point, build_routes, build_map, safe_mean_center
+from map_engine import load_fixed_graph, build_routes, build_map
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -53,22 +52,8 @@ def _search_callback(which: str) -> None:
         st.session_state[f"{which}_error"] = str(e)
 
 
-def haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
-    lat1, lon1 = a
-    lat2, lon2 = b
-    r = 6371.0
-    p1 = math.radians(lat1)
-    p2 = math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlmb = math.radians(lon2 - lon1)
-    h = (math.sin(dphi / 2) ** 2) + math.cos(p1) * math.cos(p2) * (math.sin(dlmb / 2) ** 2)
-    return 2 * r * math.asin(math.sqrt(h))
-
-
-@st.cache_resource(show_spinner=False)
-def cached_graph(center_lat: float, center_lon: float, network_type: str, dist_m: int, use_travel_time: bool):
-    center = (round(center_lat, 5), round(center_lon, 5))
-    return load_graph_from_point(center, network_type, dist_m, use_travel_time)
+def cached_graph(network_type: str):
+    return load_fixed_graph(network_type)
 
 
 st.set_page_config(page_title="Route Planner", layout="wide")
@@ -94,8 +79,6 @@ with top1:
     network_type = st.selectbox("Тип сети", ["walk", "bike", "drive"], index=0)
 with top2:
     optimize = st.selectbox("Оптимизация", ["distance", "time"], index=0)
-with top3:
-    radius_km = st.slider("Радиус графа вокруг центра (км)", 1, 30, 8, 1)
 
 left, right = st.columns(2)
 
@@ -168,20 +151,14 @@ if start == end:
     components.v1.html(m.get_root().render(), height=680, scrolling=False)
     st.stop()
 
-dist_km = haversine_km(start, end)
-need_km = max(2.0, dist_km / 2 + 1.5)
-
-use_travel_time = (optimize == "time")
 weight = "travel_time" if optimize == "time" else "length"
-dist_m = int(radius_km * 1000)
 
 latlons = [start, end]
 names = ["Start", "End"]
-center_lat, center_lon = safe_mean_center(latlons)
 
 try:
     with st.spinner("Загрузка графа и построение маршрута..."):
-        G = cached_graph(center_lat, center_lon, network_type, dist_m, use_travel_time)
+        G = cached_graph(network_type)
         routes, errors = build_routes(G, latlons, weight=weight)
 
     if errors:
