@@ -177,7 +177,7 @@ def build_map(
     places_latlon: list[tuple[float, float]],
     routes_gdf: Iterable,
     place_names: list[str],
-    zoom_start: int = 13,
+    zoom_start: int = 11,
 ):
     center = safe_mean_center(places_latlon)
 
