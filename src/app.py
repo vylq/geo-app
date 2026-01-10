@@ -7,16 +7,14 @@ import streamlit as st
 from streamlit import components
 from sqlalchemy import bindparam, text
 
-from map_engine import build_routes, build_map
+from map_engine import build_map, build_routes
 
-# PostGIS routing is optional (enabled only if postgis_engine.py is available and POSTGIS_URL is set)
 try:
     from postgis_engine import get_postgis_engine_or_none, graph_in_db, route_between_db
-except Exception:  # pragma: no cover
+except Exception:
     get_postgis_engine_or_none = None
     graph_in_db = None
     route_between_db = None
-
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -64,7 +62,7 @@ def _search_callback(which: str) -> None:
         st.session_state[f"{which}_error"] = str(e)
 
 
-def _format_distance_m(meters: float) -> str:
+def _format_distance_m(meters: float | None) -> str:
     if meters is None:
         return ""
     if meters >= 1000:
@@ -72,7 +70,7 @@ def _format_distance_m(meters: float) -> str:
     return f"{meters:.0f} м"
 
 
-def _format_duration_s(seconds: float) -> str:
+def _format_duration_s(seconds: float | None) -> str:
     if seconds is None:
         return ""
     s = int(round(seconds))
@@ -116,7 +114,6 @@ def _route_totals_from_edges_table(engine, edges_table: str, edge_ids: list[int]
 
 st.set_page_config(page_title="Route Planner", layout="wide")
 
-# session state defaults
 for key, default in [
     ("start_query", ""),
     ("end_query", ""),
@@ -132,7 +129,6 @@ for key, default in [
     if key not in st.session_state:
         st.session_state[key] = default
 
-# Layout: left panel (everything) + right (map)
 left_col, right_col = st.columns([0.38, 0.62], gap="large")
 
 with left_col:
@@ -200,7 +196,6 @@ with left_col:
             if st.session_state["end_query"].strip():
                 st.caption("Нажми Enter (минимум 3 символа).")
 
-# Compute route (DB if available and graph exists)
 start = st.session_state["start_point"]
 end = st.session_state["end_point"]
 
@@ -231,14 +226,12 @@ if start and end and start != end:
             errors.append(res.error or "DB routing failed")
         else:
             gdf = res.gdf
-            # normalize geometry column name for downstream code
             try:
                 gdf = gdf.rename_geometry("geometry")
             except Exception:
                 pass
             routes = [gdf]
 
-            # totals only when route is taken from DB (as requested)
             edges_table = f"edges_{network_type.lower()}"
             edge_ids = [int(x) for x in gdf["id"].tolist()] if "id" in gdf.columns else []
             route_totals = _route_totals_from_edges_table(engine, edges_table, edge_ids)
@@ -250,7 +243,6 @@ if start and end and start != end:
                 errors = [str(e)]
                 routes = []
 
-# Left panel: show metrics ONLY when DB is used
 with left_col:
     st.divider()
 
@@ -275,7 +267,6 @@ with left_col:
         with m2:
             st.metric("Время", _format_duration_s(time_s_display))
 
-# Right panel: map
 with right_col:
     if not start or not end:
         st.info("Введи старт и финиш и нажми Enter в каждой строке.")

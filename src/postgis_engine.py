@@ -1,21 +1,20 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
-import os
-import numpy as np
 import geopandas as gpd
-import pandas as pd
+import numpy as np
 import osmnx as ox
-from sqlalchemy import create_engine, text, inspect
+from sqlalchemy import create_engine, inspect, text
 
 
 @dataclass(frozen=True)
 class SegmentResult:
     ok: bool
     error: str | None = None
-    gdf: Any = None  # GeoDataFrame
+    gdf: Any | None = None
 
 
 def _get_engine():
@@ -32,7 +31,6 @@ def init_extensions(engine) -> None:
 
 
 def _tables(network_type: str) -> tuple[str, str]:
-    # по одному набору таблиц на walk/bike/drive (фиксированная область)
     nt = network_type.lower()
     if nt not in {"walk", "bike", "drive"}:
         raise ValueError(f"Unsupported network_type: {network_type}")
@@ -48,44 +46,25 @@ def graph_in_db(engine, network_type: str) -> bool:
     with engine.begin() as conn:
         n = conn.execute(text(f"SELECT COUNT(*) FROM {nodes_t};")).scalar_one()
         e = conn.execute(text(f"SELECT COUNT(*) FROM {edges_t};")).scalar_one()
-    return (n > 0) and (e > 0)
+    return n > 0 and e > 0
 
 
 def import_graph_to_db(engine, network_type: str, G) -> None:
-    """
-    Импорт networkx MultiDiGraph (OSMnx) -> PostGIS таблицы, пригодные для pgRouting.
-
-    Схема:
-      nodes_*: id BIGINT, geom POINT(4326)
-      edges_*: id BIGSERIAL-like, source BIGINT, target BIGINT,
-               cost_len DOUBLE, rcost_len DOUBLE,
-               cost_time DOUBLE, rcost_time DOUBLE,
-               geom LINESTRING/MULTILINESTRING(4326)
-    """
     nodes_t, edges_t = _tables(network_type)
 
-    # OSMnx -> GeoDataFrames
     gdf_nodes, gdf_edges = ox.graph_to_gdfs(G, nodes=True, edges=True, fill_edge_geometry=True)
 
-    # nodes
     idx_name = gdf_nodes.index.name or "index"
     nodes = gdf_nodes.reset_index().rename(columns={idx_name: "id"}).copy()
-
-    # на всякий случай: гарантируем POINT в 4326
     nodes = nodes[["id", "geometry"]].rename_geometry("geom")
     nodes = nodes.set_crs("EPSG:4326", allow_override=True)
 
-    # edges
-    edges = gdf_edges.reset_index().copy()  # даст u,v,key
-    # стабильный id для рёбер (pgRouting любит простой int id)
+    edges = gdf_edges.reset_index().copy()
     edges = edges.reset_index(drop=True)
-    edges["id"] = (edges.index.astype(np.int64) + 1)
-
-    # source/target — это node ids из OSMnx (u/v)
+    edges["id"] = edges.index.astype(np.int64) + 1
     edges["source"] = edges["u"].astype(np.int64)
     edges["target"] = edges["v"].astype(np.int64)
 
-    # costs
     if "length" not in edges:
         raise ValueError("Edges do not have 'length' column.")
     if "travel_time" not in edges:
@@ -93,26 +72,19 @@ def import_graph_to_db(engine, network_type: str, G) -> None:
 
     edges["cost_len"] = edges["length"].astype(float)
     edges["cost_time"] = edges["travel_time"].astype(float)
-
-    # directed граф: в обратную сторону ходить нельзя через reverse_cost
-    # если существует обратное ребро, оно будет отдельной строкой
     edges["rcost_len"] = -1.0
     edges["rcost_time"] = -1.0
 
     edges = gpd.GeoDataFrame(edges, geometry="geometry", crs="EPSG:4326").rename_geometry("geom")
     edges = edges[["id", "source", "target", "cost_len", "rcost_len", "cost_time", "rcost_time", "geom"]]
 
-    # запись
     init_extensions(engine)
-    # replace проще для учебного проекта: фиксированная область, один граф на тип сети
     nodes.to_postgis(nodes_t, engine, if_exists="replace", index=False)
     edges.to_postgis(edges_t, engine, if_exists="replace", index=False)
 
-    # индексы
     with engine.begin() as conn:
         conn.execute(text(f"ALTER TABLE {nodes_t} ADD PRIMARY KEY (id);"))
         conn.execute(text(f"CREATE INDEX IF NOT EXISTS {nodes_t}_geom_gix ON {nodes_t} USING GIST (geom);"))
-
         conn.execute(text(f"CREATE INDEX IF NOT EXISTS {edges_t}_geom_gix ON {edges_t} USING GIST (geom);"))
         conn.execute(text(f"CREATE INDEX IF NOT EXISTS {edges_t}_src_idx ON {edges_t} (source);"))
         conn.execute(text(f"CREATE INDEX IF NOT EXISTS {edges_t}_tgt_idx ON {edges_t} (target);"))
@@ -120,13 +92,18 @@ def import_graph_to_db(engine, network_type: str, G) -> None:
         conn.execute(text(f"ANALYZE {edges_t};"))
 
 
-def route_between_db(engine, network_type: str, start: tuple[float, float], end: tuple[float, float], weight: str) -> SegmentResult:
+def route_between_db(
+    engine,
+    network_type: str,
+    start: tuple[float, float],
+    end: tuple[float, float],
+    weight: str,
+) -> SegmentResult:
     nodes_t, edges_t = _tables(network_type)
 
     if weight not in {"length", "travel_time"}:
         return SegmentResult(ok=False, error=f"Unsupported weight: {weight}")
 
-    # маппинг cost колонок
     cost_col = "cost_time" if weight == "travel_time" else "cost_len"
     rcost_col = "rcost_time" if weight == "travel_time" else "rcost_len"
 

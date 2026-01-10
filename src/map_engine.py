@@ -30,7 +30,6 @@ def configure_osmnx() -> None:
     ox.settings.cache_folder = str(OSMNX_CACHE_DIR)
     ox.settings.use_cache = True
     ox.settings.log_console = False
-
     ox.settings.requests_timeout = 60
     ox.settings.overpass_settings = "[out:json][timeout:60]"
 
@@ -39,7 +38,7 @@ def configure_osmnx() -> None:
 class SegmentResult:
     ok: bool
     error: str | None = None
-    gdf: Any = None  # type: ignore
+    gdf: Any | None = None
 
 
 def safe_mean_center(latlons: list[tuple[float, float]]) -> tuple[float, float]:
@@ -65,10 +64,6 @@ def ensure_travel_time(G):
 
 
 def load_fixed_graph_local(network_type: str):
-    """
-    ТОЛЬКО локальный GraphML кэш + скачивание OSM при отсутствии.
-    (То есть как у тебя, но чуть явно названо.)
-    """
     configure_osmnx()
     GRAPH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_name = f"{network_type}_{FIXED_DIST_M}m.graphml"
@@ -80,11 +75,9 @@ def load_fixed_graph_local(network_type: str):
             cache_path.unlink(missing_ok=True)
         else:
             G = ensure_travel_time(G)
-            # обновим кэш, если travel_time добавили
             ox.save_graphml(G, cache_path)
             return G
 
-    # если файла нет — качаем из OSM (центр/радиус фиксированные)
     G = ox.graph_from_point(
         FIXED_CENTER_LATLON,
         dist=FIXED_DIST_M,
@@ -100,13 +93,6 @@ def load_fixed_graph_local(network_type: str):
 
 
 def ensure_graph_in_postgis(network_type: str) -> None:
-    """
-    Гарантирует, что нужный граф есть в PostGIS.
-
-    Приоритет как ты просил:
-      1) если локальный graphml есть — используем его как источник
-      2) если локального нет — качаем через OSMnx и сохраняем локально
-    """
     engine = get_postgis_engine_or_none()
     if engine is None:
         return
@@ -114,7 +100,6 @@ def ensure_graph_in_postgis(network_type: str) -> None:
     if graph_in_db(engine, network_type):
         return
 
-    # источник для импорта: локальный файл (если есть), иначе скачка
     G = load_fixed_graph_local(network_type)
     import_graph_to_db(engine, network_type, G)
 
@@ -135,11 +120,11 @@ def route_between_local(G, start: tuple[float, float], end: tuple[float, float],
         return SegmentResult(ok=False, error=str(e))
 
 
-def build_routes(network_type: str, places_latlon: list[tuple[float, float]], weight: str) -> tuple[list, list[str]]:
-    """
-    Если задан POSTGIS_URL -> роутинг в PostGIS (pgRouting).
-    Иначе -> как раньше локально через OSMnx/NX.
-    """
+def build_routes(
+    network_type: str,
+    places_latlon: list[tuple[float, float]],
+    weight: str,
+) -> tuple[list, list[str]]:
     routes = []
     errors: list[str] = []
 
@@ -148,9 +133,8 @@ def build_routes(network_type: str, places_latlon: list[tuple[float, float]], we
 
     if use_db:
         ensure_graph_in_postgis(network_type)
-
-    G = None
-    if not use_db:
+        G = None
+    else:
         G = load_fixed_graph_local(network_type)
 
     for i in range(len(places_latlon) - 1):
@@ -158,13 +142,13 @@ def build_routes(network_type: str, places_latlon: list[tuple[float, float]], we
         b = places_latlon[i + 1]
 
         if use_db:
-            res: DbSegmentResult = route_between_db(engine, network_type, a, b, weight=weight)  # type: ignore[arg-type]
+            res: DbSegmentResult = route_between_db(engine, network_type, a, b, weight=weight)
             if res.ok:
                 routes.append(res.gdf)
             else:
                 errors.append(f"Segment {i + 1}: {res.error or 'unknown error'}")
         else:
-            res = route_between_local(G, a, b, weight=weight)  # type: ignore[arg-type]
+            res = route_between_local(G, a, b, weight=weight)
             if res.ok:
                 routes.append(res.gdf)
             else:
